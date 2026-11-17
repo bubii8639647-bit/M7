@@ -1362,3 +1362,125 @@ RunService.RenderStepped:Connect(function()
 		end
 	end
 end)
+--[[
+    Adaptive Script Framework
+    Lua / Executor Environment
+    Auto-Execution, Connection & Error Protection
+]]
+
+local System = {
+    Version = "1.2.0",
+    Running = false,
+    Debug = true,
+    LoopDelay = 1, -- ระยะเวลาหน่วงต่อรอบการทำงานอัตโนมัติ (วินาที)
+    Connections = {}
+}
+
+local unpackArgs = table.unpack or unpack
+
+-- ระบบแสดงผลข้อความตามสถานะ Debug
+function System:Log(message, isWarning)
+    if not self.Debug and not isWarning then return end
+    
+    local prefix = isWarning and "[Warning] " or "[System] "
+    if isWarning then
+        warn(prefix .. tostring(message))
+    else
+        print(prefix .. tostring(message))
+    end
+end
+
+-- ตรวจสอบความพร้อมของระบบ
+function System:Initialize()
+    if self.Running then
+        self:Log("System is already running.", true)
+        return true
+    end
+
+    self:Log("Initializing...")
+
+    local success, err = pcall(function()
+        assert(game ~= nil, "Game environment unavailable")
+        if not game:IsLoaded() then
+            game.Loaded:Wait()
+        end
+    end)
+
+    if not success then
+        self:Log("Initialization Error: " .. tostring(err), true)
+        return false
+    end
+
+    self.Running = true
+    self:Log("Initialized successfully (v" .. self.Version .. ")")
+    return true
+end
+
+-- ระบบตรวจจับข้อผิดพลาด
+function System:Protect(callback, ...)
+    if not self.Running then
+        return false
+    end
+
+    local results = { pcall(callback, ...) }
+    local success = table.remove(results, 1)
+
+    if not success then
+        self:Log("Execution Error: " .. tostring(results[1]), true)
+        return false
+    end
+
+    return true, unpackArgs(results)
+end
+
+-- ระบบจัดการ Event Connection
+function System:BindConnection(name, connection)
+    if self.Connections[name] then
+        self.Connections[name]:Disconnect()
+    end
+    self.Connections[name] = connection
+end
+
+-- พื้นที่สำหรับใส่คำสั่งที่ต้องการให้ทำงานอัตโนมัติในแต่ละรอบ
+function System:OnUpdate()
+    -- [ใส่โค้ดหรือคำสั่งที่ต้องการให้ทำงานอัตโนมัติตรงนี้]
+    self:Log("Auto-loop tick running...")
+end
+
+-- ระบบเริ่มการทำงานอัตโนมัติเบื้องหลัง
+function System:Start()
+    if not self.Running then return end
+
+    self:Log("Starting auto-execution loop...")
+    task.spawn(function()
+        while self.Running do
+            self:Protect(function()
+                self:OnUpdate()
+            end)
+            task.wait(self.LoopDelay)
+        end
+    end)
+end
+
+-- หยุดระบบและล้างการเชื่อมต่อทั้งหมดอย่างปลอดภัย
+function System:Shutdown()
+    if not self.Running then return end
+    
+    self.Running = false
+    
+    for name, conn in pairs(self.Connections) do
+        if typeof(conn) == "RBXScriptConnection" and conn.Connected then
+            conn:Disconnect()
+        end
+        self.Connections[name] = nil
+    end
+
+    self:Log("Shutdown complete and all connections cleaned up.")
+end
+
+-- เริ่มต้นระบบและสั่งทำงานอัตโนมัติทันทีที่รัน
+if System:Initialize() then
+    System:Start()
+end
+
+return System
