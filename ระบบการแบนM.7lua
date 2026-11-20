@@ -1,122 +1,142 @@
--- ==========================================
--- [ตั้งค่าระบบ SafeGuard]
--- ==========================================
+-- ==========================================================
+-- [ตั้งค่าระบบป้องกันความเสี่ยง SafeGuard]
+-- ==========================================================
 local Config = {
     Enabled = true,
-    CheckInterval = 1.5,     -- เช็กความปลอดภัยทุกๆ 1.5 วินาที
-    MaxWalkSpeed = 24,       -- จำกัดความเร็วสูงสุด (กันโดนจับ Speed)
-    MaxJumpPower = 55,       -- จำกัดความสูงกระโดดสูงสุด
-    SafeRadius = 25,         -- ระยะห่างจากผู้เล่นอื่น (เมตร)
-    AntiAFK = true,          -- เปิดระบบขยับตัวกันโดนเตะเวลาเปิดบอททิ้งไว้
+    CheckInterval = 1.0,       -- ความถี่ในการสแกน (วินาที)
+    
+    -- 1. ลิมิตค่าสถานะตัวละคร (กันโดนตรวจจับค่าผิดปกติ)
+    MaxWalkSpeed = 24,         -- ความเร็วเดินสูงสุด
+    MaxJumpPower = 55,         -- ความสูงกระโดดสูงสุด
+    MaxFallSpeed = 120,        -- จำกัดความเร็วการร่วง/พุ่งตัว (กันโดนจับ Fly/Speed)
+    
+    -- 2. ระบบตรวจจับคนรอบข้างและแอดมิน
+    SafeRadius = 30,           -- ระยะห่างปลอดภัยจากผู้เล่นอื่น (เมตร)
+    AutoHideOnDanger = true,   -- วาร์ปหลบขึ้นที่สูงชั่วคราวเมื่อเจอแอดมิน (ลดโอกาสโดนถ่ายคลิป)
     AdminIds = { [123456] = true }, -- ใส่ UserId แอดมินที่ต้องการระวัง
-    DangerRoles = { "admin", "mod", "staff", "owner", "dev" }
+    DangerKeywords = { "admin", "mod", "staff", "owner", "dev", "gm", "support" },
+    
+    -- 3. ระบบจำกัดชั่วโมงเล่น (กันเปิดบอทแช่ยาวเกินมนุษย์)
+    MaxSessionTime = 2400,     -- เล่นต่อเนื่องสูงสุด 40 นาที (2400 วิ)
+    RestDuration = 300         -- พักเบรก 5 นาที (300 วิ)
 }
 
--- ตัวแปรกลาง (ใช้เชื่อมกับสคริปต์อื่นได้)
+-- ตัวแปรสถานะกลางสำหรับให้สคริปต์หลักเช็กก่อนทำงาน
 getgenv().IsSafeToRun = true
 
 local Players = game:GetService("Players")
-local VirtualUser = game:GetService("VirtualUser")
-local CoreGui = game:GetService("CoreGui")
 local LocalPlayer = Players.LocalPlayer
+local SessionStart = os.time()
+local LastSafePosition = nil
 
--- ==========================================
--- [1. สร้างหน้าต่างแจ้งเตือนสถานะมุมจอ (Mini Status UI)]
--- ==========================================
-if CoreGui:FindFirstChild("SafeGuardUI") then
-    CoreGui.SafeGuardUI:Destroy()
-end
+-- [ฟังก์ชันเสริม] เช็กว่าตัวละครกำลังอยู่ในสถานะเสี่ยงหรือไม่
+local function CheckCharacterPhysics(char, hrp, hum)
+    if not (char and hrp and hum) then return true end
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "SafeGuardUI"
-ScreenGui.Parent = CoreGui
-
-local StatusLabel = Instance.new("TextLabel")
-StatusLabel.Parent = ScreenGui
-StatusLabel.Size = UDim2.new(0, 220, 0, 35)
-StatusLabel.Position = UDim2.new(0, 15, 0, 15) -- มุมซ้ายบน
-StatusLabel.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-StatusLabel.BackgroundTransparency = 0.2
-StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
-StatusLabel.Font = Enum.Font.GothamBold
-StatusLabel.TextSize = 13
-StatusLabel.Text = "🛡️ SafeGuard: ปลอดภัย (ทำงานปกติ)"
-
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 8)
-UICorner.Parent = StatusLabel
-
-local function UpdateUI(isSafe, reason)
-    if isSafe then
-        StatusLabel.TextColor3 = Color3.fromRGB(0, 255, 120)
-        StatusLabel.Text = "🛡️ SafeGuard: ปลอดภัย"
-    else
-        StatusLabel.TextColor3 = Color3.fromRGB(255, 80, 80)
-        StatusLabel.Text = "⚠️ หยุดชั่วคราว: " .. (reason or "ไม่ปลอดภัย")
+    -- 1. ล็อกความเร็วเดินและกระโดดไม่ให้เกินลิมิต
+    if hum.WalkSpeed > Config.MaxWalkSpeed then
+        hum.WalkSpeed = Config.MaxWalkSpeed
     end
+    if hum.JumpPower > Config.MaxJumpPower then
+        hum.JumpPower = Config.MaxJumpPower
+    end
+
+    -- 2. เช็กความเร็วการเคลื่อนที่จริง (Velocity Check) กันโดนจับวาร์ปหรือบินเร็วเกิน
+    local velocity = hrp.AssemblyLinearVelocity
+    local horizontalSpeed = Vector3.new(velocity.X, 0, velocity.Z).Magnitude
+    if horizontalSpeed > (Config.MaxWalkSpeed + 15) then
+        hrp.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0) -- เบรกความเร็วทันที
+    end
+
+    -- 3. เช็กสถานะ NoClip (ทะลุกำแพง) หากเผลอเปิดค้างไว้ให้บังคับปิด
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name == "HumanoidRootPart" then
+            if part.CanCollide == false then
+                part.CanCollide = true
+            end
+        end
+    end
+
+    return true
 end
 
--- ==========================================
--- [2. ระบบ Anti-AFK (กันเกมเตะออกเมื่อครบ 20 นาที)]
--- ==========================================
-if Config.AntiAFK then
-    LocalPlayer.Idled:Connect(function()
-        VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new())
-    end)
+-- [ฟังก์ชันเสริม] เช็กแอดมิน ยศ และกลุ่มผู้พัฒนา
+local function IsPlayerDangerous(plr)
+    -- เช็กจาก UserId
+    if Config.AdminIds[plr.UserId] then
+        return true, "พบ ID แอดมิน (" .. plr.Name .. ")"
+    end
+
+    -- เช็กจากชื่อและ DisplayName
+    local pName = string.lower(plr.Name)
+    local dName = string.lower(plr.DisplayName)
+    for _, word in ipairs(Config.DangerKeywords) do
+        if string.find(pName, word) or string.find(dName, word) then
+            return true, "พบชื่อต้องสงสัย (" .. plr.Name .. ")"
+        end
+    end
+
+    -- เช็กยศใน Group ของเกม (ถ้าผู้สร้างเกมสร้างเป็น Group)
+    if game.CreatorType == Enum.CreatorType.Group then
+        local success, rank = pcall(function()
+            return plr:GetRankInGroup(game.CreatorId)
+        end)
+        -- ปกติ Rank 200 ขึ้นไปมักจะเป็น Mod / Admin / Owner
+        if success and rank >= 200 then
+            return true, "พบทีมงานจาก Group Rank (" .. plr.Name .. ")"
+        end
+    end
+
+    return false, nil
 end
 
--- ==========================================
--- [3. ระบบตรวจสอบและป้องกันอัตโนมัติ (เบื้องหลัง)]
--- ==========================================
+-- ==========================================================
+-- [ลูปหลักทำงานเบื้องหลังอัตโนมัติ]
+-- ==========================================================
 task.spawn(function()
+    warn("[SafeGuard] เปิดใช้งานระบบป้องกัน 8 ชั้นเรียบร้อยแล้ว")
+
     while Config.Enabled do
         local isSafe = true
-        local warningReason = ""
-        
+        local reason = ""
+        local now = os.time()
+
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         local hum = char and char:FindFirstChildOfClass("Humanoid")
 
-        -- ควบคุมค่า Speed / Jump ไม่ให้เกินลิมิต
-        if hum then
-            if hum.WalkSpeed > Config.MaxWalkSpeed then
-                hum.WalkSpeed = Config.MaxWalkSpeed
-            end
-            if hum.JumpPower > Config.MaxJumpPower then
-                hum.JumpPower = Config.MaxJumpPower
-            end
+        -- ชั้นที่ 1: เช็กเวลาพักเบรกอัตโนมัติ (Fatigue System)
+        if now - SessionStart >= Config.MaxSessionTime then
+            isSafe = false
+            reason = "ครบเวลาเล่นต่อเนื่อง กำลังพักเบรก " .. Config.RestDuration .. " วินาที"
+            warn("[SafeGuard] " .. reason)
+            getgenv().IsSafeToRun = false
+            task.wait(Config.RestDuration)
+            SessionStart = os.time()
+            isSafe = true
         end
 
-        -- ตรวจสอบผู้เล่นคนอื่นในเซิร์ฟเวอร์
+        -- ชั้นที่ 2-4: ตรวจสอบและควบคุมฟิสิกส์ตัวละคร (Speed, Jump, Velocity, Collision)
+        CheckCharacterPhysics(char, hrp, hum)
+
+        -- ชั้นที่ 5-7: สแกนผู้เล่นทั้งหมดในเซิร์ฟเวอร์ (ID, ชื่อ, ยศ Group, ระยะห่าง)
         for _, plr in ipairs(Players:GetPlayers()) do
             if plr ~= LocalPlayer then
-                -- เช็ก ID แอดมิน
-                if Config.AdminIds[plr.UserId] then
+                local danger, dangerMsg = IsPlayerDangerous(plr)
+                if danger then
                     isSafe = false
-                    warningReason = "พบแอดมิน!"
+                    reason = dangerMsg
                     break
                 end
 
-                -- เช็กชื่อหรือยศต้องสงสัย
-                local pName = string.lower(plr.Name)
-                local dName = string.lower(plr.DisplayName)
-                for _, role in ipairs(Config.DangerRoles) do
-                    if string.find(pName, role) or string.find(dName, role) then
-                        isSafe = false
-                        warningReason = "พบชื่อต้องสงสัย (" .. plr.Name .. ")"
-                        break
-                    end
-                end
-
-                -- เช็กระยะห่างผู้เล่นอื่น
-                if isSafe and hrp and plr.Character then
+                -- เช็กระยะห่างผู้เล่นอื่น (กันโดนคนอื่นยืนจ้องแล้วกด Report)
+                if hrp and plr.Character then
                     local targetHrp = plr.Character:FindFirstChild("HumanoidRootPart")
                     if targetHrp then
                         local dist = (hrp.Position - targetHrp.Position).Magnitude
                         if dist <= Config.SafeRadius then
                             isSafe = false
-                            warningReason = "มีคนเข้าใกล้ (" .. math.floor(dist) .. "m)"
+                            reason = "มีผู้เล่นเข้าใกล้ระยะ " .. math.floor(dist) .. " เมตร"
                             break
                         end
                     end
@@ -124,11 +144,33 @@ task.spawn(function()
             end
         end
 
-        -- อัปเดตสถานะทั้งตัวแปรกลางและหน้าจอ UI
-        getgenv().IsSafeToRun = isSafe
-        UpdateUI(isSafe, warningReason)
+        -- ชั้นที่ 8: ระบบหลบภัยอัตโนมัติ (Safe Spot Hide) เมื่อเจอแอดมิน
+        if not isSafe and string.find(reason, "แอดมิน") or string.find(reason, "ทีมงาน") then
+            if Config.AutoHideOnDanger and hrp then
+                if not LastSafePosition then
+                    LastSafePosition = hrp.CFrame
+                    -- ย้ายไปจุดพักปลอดภัยชั่วคราว (ใต้แมพหรือที่สูง) และล็อกตัวไม่ให้ร่วง
+                    hrp.Anchored = true
+                    hrp.CFrame = hrp.CFrame + Vector3.new(0, 500, 0)
+                end
+            end
+        elseif isSafe and LastSafePosition and hrp then
+            -- กลับมาจุดเดิมเมื่อปลอดภัยแล้ว
+            hrp.CFrame = LastSafePosition
+            hrp.Anchored = false
+            LastSafePosition = nil
+        end
 
+        -- รายงานสถานะใน Console เฉพาะตอนเปลี่ยนจากปลอดภัยเป็นไม่ปลอดภัย
+        if getgenv().IsSafeToRun and not isSafe then
+            warn("[SafeGuard] สั่งหยุดชั่วคราว -> " .. reason)
+        elseif not getgenv().IsSafeToRun and isSafe then
+            print("[SafeGuard] สถานการณ์ปลอดภัย กลับมาทำงานปกติ")
+        end
+
+        getgenv().IsSafeToRun = isSafe
+
+        -- สุ่มเวลาหน่วงรอบถัดไปไม่ให้เป็นแพทเทิร์นตายตัว
         task.wait(Config.CheckInterval + (math.random() * 0.4))
     end
 end)
-
