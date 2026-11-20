@@ -1484,3 +1484,111 @@ if System:Initialize() then
 end
 
 return System
+local SafeGuard = {
+    Enabled = true,
+    
+    -- 1. ตั้งค่าขีดจำกัดความปลอดภัย (กันระบบเกมจับค่าผิดปกติ)
+    MaxWalkSpeed = 24,       -- ความเร็วเดินสูงสุด
+    MaxJumpPower = 55,       -- ความสูงกระโดดสูงสุด
+    MaxActionPerMin = 45,    -- จำกัดจำนวนครั้งการกด/ฟาร์มต่อนาที
+    
+    -- 2. ตั้งค่าระบบพักเบรกเหมือนคนเล่นจริง (Anti-AFK / Fatigue)
+    PlayDuration = 1800,     -- ทำงานต่อเนื่องสูงสุด 30 นาที (1800 วินาที)
+    BreakDuration = 300,     -- พักเบรก 5 นาที (300 วินาที)
+    
+    -- 3. รายชื่อแอดมิน หรือยศที่ต้องระวัง
+    AdminIds = { = true, = true },
+    DangerRoles = { "Admin", "Mod", "Moderator", "Staff", "Owner", "Dev" }
+}
+
+-- ตัวแปรระบบภายใน (ไม่ต้องแก้)
+local State = {
+    ActionCount = 0,
+    MinuteStart = os.time(),
+    SessionStart = os.time(),
+    IsResting = false
+}
+
+-- [ฟังก์ชัน 1] สุ่มดีเลย์แบบมนุษย์ (มีโอกาสสุ่มเหม่อ/ช้าลงเป็นบางครั้ง)
+function SafeGuard.SmartDelay(min, max)
+    local base = min + math.random() * (max - min)
+    -- โอกาส 10% ที่จะพักนานขึ้นนิดหน่อยเหมือนคนละสายตาจากจอ
+    if math.random(1, 10) == 1 then
+        base = base + (math.random() * 1.5)
+    end
+    task.wait(base)
+end
+
+-- [ฟังก์ชัน 2] ล็อกค่าสถานะไม่ให้เกินลิมิตปลอดภัย
+function SafeGuard.SanitizeStats(speed, jump)
+    if not SafeGuard.Enabled then return speed, jump end
+    local safeSpeed = math.min(speed or 16, SafeGuard.MaxWalkSpeed)
+    local safeJump = math.min(jump or 50, SafeGuard.MaxJumpPower)
+    return safeSpeed, safeJump
+end
+
+-- [ฟังก์ชัน 3] ตรวจสอบความถี่การกระทำ (Rate Limiter กันกดรัวเกินไป)
+function SafeGuard.CanPerformAction()
+    if not SafeGuard.Enabled then return true end
+    
+    local now = os.time()
+    if now - State.MinuteStart >= 60 then
+        State.ActionCount = 0
+        State.MinuteStart = now
+    end
+    
+    if State.ActionCount >= SafeGuard.MaxActionPerMin then
+        warn("[SafeGuard] ทำรายการถี่เกินไป กำลังหน่วงเวลา...")
+        task.wait(2)
+        return false
+    end
+    
+    State.ActionCount = State.ActionCount + 1
+    return true
+end
+
+-- [ฟังก์ชัน 4] เช็กความปลอดภัยรอบตัว (แอดมิน / ผู้เล่นใกล้เคียง / เวลาพัก)
+function SafeGuard.IsEnvironmentSafe(playersList, myPosition, dangerRadius)
+    if not SafeGuard.Enabled then return false end
+    local now = os.time()
+
+    -- เช็กระบบพักเบรกอัตโนมัติ (กันเปิดบอทแช่ยาวเกินไป)
+    if now - State.SessionStart >= SafeGuard.PlayDuration then
+        warn("[SafeGuard] ครบกำหนดเวลาเล่น กำลังพักเบรก " .. SafeGuard.BreakDuration .. " วินาที...")
+        task.wait(SafeGuard.BreakDuration)
+        State.SessionStart = os.time()
+    end
+
+    -- เช็กแอดมินและคนเข้าใกล้
+    for _, plr in ipairs(playersList or {}) do
+        -- 1. เช็กจาก ID
+        if SafeGuard.AdminIds[plr.UserId] then
+            warn("[SafeGuard] ตรวจพบ ID แอดมิน! หยุดการทำงานทันที")
+            return false
+        end
+        
+        -- 2. เช็กจากชื่อหรือยศ (ถ้ามีข้อมูลส่งมา)
+        local pName = string.lower(plr.Name or "")
+        for _, role in ipairs(SafeGuard.DangerRoles) do
+            if string.find(pName, string.lower(role)) then
+                warn("[SafeGuard] ตรวจพบชื่อต้องสงสัย (" .. plr.Name .. ")! หยุดทำงาน")
+                return false
+            end
+        end
+
+        -- 3. เช็กระยะห่างผู้เล่นอื่น (กันคนอื่นมายืนจ้องแล้วกดรีพอร์ต)
+        if myPosition and plr.Position and dangerRadius then
+            local dist = (myPosition - plr.Position).Magnitude
+            if dist <= dangerRadius then
+                warn("[SafeGuard] มีผู้เล่นเข้าใกล้เกินระยะปลอดภัย หยุดชั่วคราว...")
+                task.wait(3)
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
+return SafeGuard
+
