@@ -22,7 +22,12 @@ local Config = {
 	TargetLockEnabled = false,
 	WallCheck = true, -- true = ไม่ล็อคทะลุกำแพง, false = ล็อคทะลุกำแพง
 	FOVRadius = 120,
-	LockSpeed = 0.45,
+	LockMaxDistance = 500, -- ระยะล็อคเป้าสูงสุด (studs)
+	LockSpeed = 0.55,
+	LockStrength = 500,
+	LockFineSpeed = 0.00, -- ค่าปรับละเอียดเพิ่มเติม 0.00-0.50
+	UIAccentColor = Color3.fromRGB(0, 195, 255),
+	UIRainbow = false,
 	FOVColor = Color3.fromRGB(0, 210, 255),
 	FOVRainbow = false,
 
@@ -37,7 +42,8 @@ local Config = {
 	},
 
 	-- รายชื่อผู้เล่นที่ยกเว้นการล็อค (Whitelist / ทีมเดียวกัน)
-	ExcludedPlayers = {}, -- [UserId] = true
+	ExcludedPlayers = {}, -- [UserId] = true (manual whitelist)
+	AutoTeamPlayers = {}, -- [UserId] = true (detected teammates)
 
 	-- ระบบมองเห็น (ESP)
 	BoxESPEnabled = false,
@@ -265,6 +271,34 @@ local minCorner = Instance.new("UICorner")
 minCorner.CornerRadius = UDim.new(0, 8)
 minCorner.Parent = minimizeBtn
 
+-- ปุ่มสลับมุมมองกล้อง บุคคลที่ 1 / บุคคลที่ 3
+local cameraModeButton = Instance.new("TextButton")
+cameraModeButton.Size = UDim2.new(0, 64, 0, 28)
+cameraModeButton.Position = UDim2.new(1, -108, 0.5, -14)
+cameraModeButton.BackgroundColor3 = Color3.fromRGB(35, 42, 62)
+cameraModeButton.Text = "มุมมอง: 3P"
+cameraModeButton.TextColor3 = Color3.fromRGB(235, 240, 250)
+cameraModeButton.Font = Enum.Font.GothamBold
+cameraModeButton.TextSize = 10
+cameraModeButton.ZIndex = 3
+cameraModeButton.Parent = header
+local cameraModeCorner = Instance.new("UICorner")
+cameraModeCorner.CornerRadius = UDim.new(0, 8)
+cameraModeCorner.Parent = cameraModeButton
+local firstPersonEnabled = false
+cameraModeButton.MouseButton1Click:Connect(function()
+	firstPersonEnabled = not firstPersonEnabled
+	if firstPersonEnabled then
+		player.CameraMode = Enum.CameraMode.LockFirstPerson
+		cameraModeButton.Text = "มุมมอง: 1P"
+	else
+		player.CameraMode = Enum.CameraMode.Classic
+		player.CameraMinZoomDistance = 0.5
+		player.CameraMaxZoomDistance = 128
+		cameraModeButton.Text = "มุมมอง: 3P"
+	end
+end)
+
 local scrollContainer = Instance.new("ScrollingFrame")
 scrollContainer.Size = UDim2.new(1, 0, 1, -50)
 scrollContainer.Position = UDim2.new(0, 0, 0, 48)
@@ -455,6 +489,24 @@ local espColorPopup = createColorPickerPopup("✦ เลือกสี ESP", fu
 	Config.ESPRainbow = item.IsRainbow
 	if not item.IsRainbow then
 		Config.ESPColor = item.Color
+	end
+end)
+
+local uiColorPopup = createColorPickerPopup("✦ เปลี่ยนสีหน้าต่าง UI", function(item)
+	Config.UIRainbow = item.IsRainbow
+	if not item.IsRainbow then
+		Config.UIAccentColor = item.Color
+		mainStroke.Color = item.Color
+		m7OuterStroke.Color = item.Color
+		m7InnerStroke.Color = item.Color
+		scrollContainer.ScrollBarImageColor3 = item.Color
+		for _, popup in ipairs(subPopups) do
+			local stroke = popup:FindFirstChildOfClass("UIStroke")
+			if stroke then stroke.Color = item.Color end
+		end
+	else
+		-- สีรุ้งสำหรับ UI จะอัปเดตใน RenderStepped
+		Config.UIRainbow = true
 	end
 end)
 
@@ -660,7 +712,7 @@ local function refreshPlayerWhitelistUI()
 			subLabel.ZIndex = 13
 			subLabel.Parent = row
 
-			local isExcluded = Config.ExcludedPlayers[targetPlayer.UserId] == true
+			local isExcluded = Config.ExcludedPlayers[targetPlayer.UserId] == true or Config.AutoTeamPlayers[targetPlayer.UserId] == true
 
 			local swBtn = Instance.new("TextButton")
 			swBtn.Size = UDim2.new(0, 42, 0, 22)
@@ -711,6 +763,21 @@ end
 
 autoTeamBtn.MouseButton1Click:Connect(function()
 	autoSelectTeammates()
+end)
+
+-- อัปเดตเพื่อนร่วมทีมอัตโนมัติ รองรับการสลับทีมระหว่างเล่น (เช่น 2v2)
+task.spawn(function()
+	while screenGui.Parent do
+		for _, targetPlayer in ipairs(Players:GetPlayers()) do
+			if targetPlayer ~= player then
+				Config.AutoTeamPlayers[targetPlayer.UserId] = isSameTeam(targetPlayer) and true or nil
+			end
+		end
+		if teamWhitelistPopup.Visible then
+			refreshPlayerWhitelistUI()
+		end
+		task.wait(1)
+	end
 end)
 
 -- ==========================================
@@ -994,6 +1061,20 @@ local function createSlider(labelPrefix, minVal, maxVal, defaultVal, isFloat, on
 	fCorner.CornerRadius = UDim.new(1, 0)
 	fCorner.Parent = fill
 
+	local fillGradient = Instance.new("UIGradient")
+	fillGradient.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 220, 255)),
+		ColorSequenceKeypoint.new(0.55, Color3.fromRGB(70, 130, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 90, 255))
+	})
+	fillGradient.Parent = fill
+
+	local fillStroke = Instance.new("UIStroke")
+	fillStroke.Color = Color3.fromRGB(100, 210, 255)
+	fillStroke.Thickness = 0.6
+	fillStroke.Transparency = 0.35
+	fillStroke.Parent = fill
+
 	local dragging = false
 	local function updateSlider(input)
 		local rel = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
@@ -1040,16 +1121,32 @@ createPopupTriggerButton("เลือกคน/ทีมที่ไม่ต�
 	refreshPlayerWhitelistUI()
 end)
 
-createSlider("ปรับขนาดเป้ากลางจอ (FOV)", 50, 300, Config.FOVRadius, false, function(val)
+createSlider("ปรับขนาดเป้ากลางจอ (FOV)", 50, 1000, Config.FOVRadius, false, function(val)
 	Config.FOVRadius = val
 	fovCircle.Size = UDim2.new(0, val * 2, 0, val * 2)
 end)
 
-createSlider("ความเร็วในการล็อคเป้า (Lock Speed)", 0.05, 1.00, Config.LockSpeed, true, function(val)
-	Config.LockSpeed = val
+createSlider("ระยะล็อคเป้า (1-1000 studs)", 1, 1000, Config.LockMaxDistance, false, function(val)
+	Config.LockMaxDistance = val
+end)
+
+local function updateLockSpeed()
+	-- แถบหลักกำหนดช่วง 0.10-1.00 และแถบละเอียดเพิ่มได้อีก 0.00-0.50
+	Config.LockSpeed = math.clamp(0.1 + (Config.LockStrength / 1000) * 0.9 + Config.LockFineSpeed, 0, 1)
+end
+
+createSlider("ความเร็วล็อคเป้า / ติดตามเป้า (0-1000)", 0, 1000, Config.LockStrength, false, function(val)
+	Config.LockStrength = val
+	updateLockSpeed()
+end)
+
+createSlider("ปรับความเร็วล็อคเป้าแบบละเอียด (0.00-0.50)", 0, 0.5, Config.LockFineSpeed, true, function(val)
+	Config.LockFineSpeed = val
+	updateLockSpeed()
 end)
 
 createPopupTriggerButton("เลือกสีเป้ากลางจอ (FOV Color)", "เลือกสี ▸", fovColorPopup)
+createPopupTriggerButton("เปลี่ยนสีหน้าต่าง UI", "เปลี่ยนสี ▸", uiColorPopup)
 
 createToggle("ESP กรอบสี่เหลี่ยมรอบตัว (Box)", false, function(isOn)
 	Config.BoxESPEnabled = isOn
@@ -1071,6 +1168,15 @@ end)
 
 createToggle("กระโดดสูง (HIGH JUMP)", false, function(isOn)
 	Config.JumpEnabled = isOn
+end)
+
+-- แถบเลื่อนปรับความเร็ววิ่งและความสูงกระโดด (สูงสุด 500)
+createSlider("ปรับความเร็ววิ่ง (16-500)", 16, 500, Config.WalkSpeed, false, function(val)
+	Config.WalkSpeed = val
+end)
+
+createSlider("ปรับความสูงกระโดด (50-500)", 50, 500, Config.JumpPower, false, function(val)
+	Config.JumpPower = val
 end)
 
 -- ==========================================
@@ -1136,22 +1242,19 @@ end
 Players.PlayerAdded:Connect(function(p)
 	createPlayerESP(p)
 	p:GetPropertyChangedSignal("Team"):Connect(function()
-		if isSameTeam(p) then
-			Config.ExcludedPlayers[p.UserId] = true
-		end
+		Config.AutoTeamPlayers[p.UserId] = isSameTeam(p) and true or nil
 		if teamWhitelistPopup.Visible then
 			refreshPlayerWhitelistUI()
 		end
 	end)
 	task.wait(0.5)
-	if isSameTeam(p) then
-		Config.ExcludedPlayers[p.UserId] = true
-	end
+	Config.AutoTeamPlayers[p.UserId] = isSameTeam(p) and true or nil
 end)
 
 Players.PlayerRemoving:Connect(function(p)
 	removePlayerESP(p)
 	Config.ExcludedPlayers[p.UserId] = nil
+	Config.AutoTeamPlayers[p.UserId] = nil
 	if teamWhitelistPopup.Visible then
 		refreshPlayerWhitelistUI()
 	end
@@ -1211,15 +1314,16 @@ local function getClosestTargetInFOV()
 	local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
 
 	for _, targetPlayer in ipairs(Players:GetPlayers()) do
-		if targetPlayer ~= player and not Config.ExcludedPlayers[targetPlayer.UserId] and targetPlayer.Character then
+		if targetPlayer ~= player and not Config.ExcludedPlayers[targetPlayer.UserId] and not Config.AutoTeamPlayers[targetPlayer.UserId] and targetPlayer.Character then
 			local humanoid = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
 			if humanoid and humanoid.Health > 0 then
 				local candidateParts = getEnabledBodyParts(targetPlayer.Character)
 				for _, part in ipairs(candidateParts) do
 					local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
 					if onScreen and screenPos.Z > 0 then
+						local worldDistance = (part.Position - camera.CFrame.Position).Magnitude
 						local dist = (Vector2.new(screenPos.X, screenPos.Y) - screenCenter).Magnitude
-						if dist <= shortestDistance and isTargetVisible(part, targetPlayer.Character) then
+						if worldDistance <= Config.LockMaxDistance and dist <= shortestDistance and isTargetVisible(part, targetPlayer.Character) then
 							shortestDistance = dist
 							closestPart = part
 						end
@@ -1275,18 +1379,26 @@ end)
 -- ==========================================
 -- 12. ลูปอัปเดตภาพและระบบล็อคเป้าหลัก (RenderStepped)
 -- ==========================================
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(dt)
 	local rainbowColor = Color3.fromHSV((tick() * 0.25) % 1, 0.85, 1)
 
 	if Config.FOVRainbow then
 		fovStroke.Color = rainbowColor
+	end
+	if Config.UIRainbow then
+		mainStroke.Color = rainbowColor
+		m7OuterStroke.Color = rainbowColor
+		m7InnerStroke.Color = rainbowColor
+		scrollContainer.ScrollBarImageColor3 = rainbowColor
 	end
 
 	if Config.TargetLockEnabled then
 		local targetPart = getClosestTargetInFOV()
 		if targetPart then
 			local targetCF = CFrame.new(camera.CFrame.Position, targetPart.Position)
-			camera.CFrame = camera.CFrame:Lerp(targetCF, Config.LockSpeed)
+			-- ปรับความเร็วตาม dt เพื่อให้ความรู้สึกใกล้เคียงกันทุก FPS
+			local alpha = 1 - math.pow(1 - math.clamp(Config.LockSpeed, 0, 1), dt * 60)
+			camera.CFrame = camera.CFrame:Lerp(targetCF, alpha)
 		end
 	end
 
@@ -1311,7 +1423,7 @@ RunService.RenderStepped:Connect(function()
 				local boxX = hrpPos.X - (boxWidth / 2)
 				local boxY = topPos.Y
 
-				local isExcluded = Config.ExcludedPlayers[targetPlayer.UserId] == true
+				local isExcluded = Config.ExcludedPlayers[targetPlayer.UserId] == true or Config.AutoTeamPlayers[targetPlayer.UserId] == true
 				local finalColor = isExcluded and Color3.fromRGB(70, 240, 140) or activeESPColor
 
 				if Config.BoxESPEnabled then
@@ -1484,6 +1596,7 @@ if System:Initialize() then
 end
 
 return System
+
 local SafeGuard = {
     Enabled = true,
     
